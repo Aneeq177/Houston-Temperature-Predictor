@@ -1,0 +1,44 @@
+# ── Secrets & credentials ────────────────────────────────────────────────────
+# IMPORTANT: .gitignore does NOT support inline comments on pattern lines.
+# Every pattern line must be clean — comments go on their own separate lines.
+.env
+.env.template
+# GEE service-account key folder
+secrets/
+# Catches any stray JSON key files at the root level
+*.json
+
+# ── Python runtime ───────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# ── Data: large / generated files ────────────────────────────────────────────
+# Satellite GeoTIFF chips
+data/images/
+# Segmentation overlay PNGs
+data/visuals/
+# Open-Meteo requests-cache SQLite file
+data/.om_cache*
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# ── Results: generated figures ───────────────────────────────────────────────
+results/*.png
+results/*.pdf
+
+# ── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb~
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
