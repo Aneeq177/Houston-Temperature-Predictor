@@ -2,7 +2,6 @@
 # IMPORTANT: .gitignore does NOT support inline comments on pattern lines.
 # Every pattern line must be clean — comments go on their own separate lines.
 .env
-.env.template
 # GEE service-account key folder
 secrets/
 # Catches any stray JSON key files at the root level
