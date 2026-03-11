@@ -1,66 +1,67 @@
 ==================================================================
   HOUSTON URBAN HEAT ISLAND — STATISTICAL ANALYSIS SUMMARY
-  Generated: 2026-03-10 16:40
+  Generated: 2026-03-10 22:37
 ==================================================================
 
   DATASET
-    Stations analysed         : 60
-    Avg. Summer Temp range    : 35.13 – 38.76 °C   (mean 38.07 °C)
-    Impervious cover range    : 2.8 – 68.3 %  (mean 24.1 %)
-    Green space range         : 31.7 – 97.2 %  (mean 75.9 %)
+    Stations analysed         : 63
+    LST range (Aug 2023)      : 33.70 – 53.74 °C   (mean 45.46 °C)
+    Impervious cover range    : 0.2 – 55.8 %  (mean 21.6 %)
+    Green space range         : 32.8 – 99.8 %  (mean 75.7 %)
 
 ──────────────────────────────────────────────────────────────────
   PEARSON CORRELATION  (linear association)
 ──────────────────────────────────────────────────────────────────
-    Impervious → Temp :  r = +0.3469   p = 0.0066   R² = 0.1203   [significant ✓]
-    Green Space → Temp:  r = -0.3469   p = 0.0066   R² = 0.1203   [significant ✓]
+    Impervious → Temp :  r = +0.5102   p = < 0.001   R² = 0.2603   [significant ✓]
+    Green Space → Temp:  r = -0.1912   p = 0.133   R² = 0.0366   [not significant]
 
 ──────────────────────────────────────────────────────────────────
   SPEARMAN CORRELATION  (rank-based, robust to outliers)
 ──────────────────────────────────────────────────────────────────
-    Impervious → Temp :  ρ = +0.3414   p = 0.0076   [significant ✓]
-    Green Space → Temp:  ρ = -0.3414   p = 0.0076   [significant ✓]
+    Impervious → Temp :  ρ = +0.5676   p = < 0.001   [significant ✓]
+    Green Space → Temp:  ρ = -0.3731   p = 0.0026   [significant ✓]
 
 ──────────────────────────────────────────────────────────────────
-  SIMPLE OLS REGRESSION  —  Avg_Summer_Temp ~ Pct_Impervious
+  SIMPLE OLS REGRESSION  —  LST ~ Pct_Impervious
 ──────────────────────────────────────────────────────────────────
-    Slope             : +0.0156 °C per 1% impervious cover
-    95% CI on slope   : ± 0.0111 °C
-    Intercept         : 37.6884 °C
-    R²                : 0.1203  (explains 12.0% of temperature variance)
-    p-value           : 0.0066   [significant ✓]
-    Std. Error        : 0.0056
+    Slope             : +0.1280 °C per 1% impervious cover
+    95% CI on slope   : ± 0.0552 °C
+    Intercept         : 42.6889 °C
+    R²                : 0.2603  (explains 26.0% of temperature variance)
+    p-value           : < 0.001   [significant ✓]
+    Std. Error        : 0.0276
 
 ──────────────────────────────────────────────────────────────────
-  MULTIPLE OLS REGRESSION  —  Temp ~ Pct_Impervious + Pct_Green
+  MULTIPLE OLS REGRESSION  —  LST ~ Pct_Impervious + Pct_Green
 ──────────────────────────────────────────────────────────────────
-    R²                : 0.1203  (explains 12.0% of temperature variance)
-    Marginal gain vs simple OLS: -0.0 pp
+    R²                : 0.4191  (explains 41.9% of temperature variance)
+    Marginal gain vs simple OLS: +15.9 pp
 
 ──────────────────────────────────────────────────────────────────
   NORMALITY OF RESIDUALS  (Shapiro-Wilk)
 ──────────────────────────────────────────────────────────────────
-    W = 0.8335   p = < 0.001
+    W = 0.9509   p = 0.014
     Residuals deviate from normality (p ≤ 0.05 → prefer Spearman interpretation).
 
 ──────────────────────────────────────────────────────────────────
   INTERPRETATION
 ──────────────────────────────────────────────────────────────────
 There is a moderate positive correlation between impervious surface
-cover and average summer temperature across Houston metro stations
-(Pearson r = +0.347, p = 0.0066).
+cover and land surface temperature (LST) across Houston metro stations
+(Pearson r = +0.510, p = < 0.001).
+LST is derived from Landsat 8 30 m thermal imagery (August 2023).
 
 The OLS regression estimates that each additional 1% of impervious
-cover is associated with a 0.016 °C increase
-in average summer temperature (95% CI: ±0.011 °C per %).
+cover is associated with a 0.128 °C increase
+in LST (95% CI: ±0.055 °C per %).
 
-Green space shows a negative association with temperature
-(r = -0.347, p = 0.0066), consistent with
+Green space shows a negative association with LST
+(r = -0.191, p = 0.133), consistent with
 the urban heat-island hypothesis that vegetation provides a cooling effect.
 
-The simple model (Impervious only) explains 12.0% of temperature
-variance; adding Green Space raises this to 12.0%.
-Note: with n = 60 stations, results should be interpreted cautiously.
+The simple model (Impervious only) explains 26.0% of temperature
+variance; adding Green Space raises this to 41.9%.
+Note: with n = 63 stations, results should be interpreted cautiously.
 Increasing spatial coverage would strengthen statistical power.
 
 ==================================================================
