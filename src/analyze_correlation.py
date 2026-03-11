@@ -2,8 +2,8 @@
 analyze_correlation.py
 ----------------------
 Merges weather-station and surface-composition data, runs a full statistical
-analysis of the relationship between impervious surface cover and average
-summer temperature, and produces publication-ready figures.
+analysis of the relationship between impervious surface cover and land surface
+temperature (Landsat 8, August 2023), and produces publication-ready figures.
 
 Inputs
 ------
@@ -290,10 +290,10 @@ def _scatter_with_trend(
     )
 
     ax.set_xlabel(x_label)
-    ax.set_ylabel("Avg. Summer Temperature (°C)")
+    ax.set_ylabel("Land Surface Temp. (°C)")
     title_prefix = "Urban Heat Island" if x_col == "Pct_Impervious" else "Vegetation Cooling"
-    ax.set_title(f"{title_prefix}: {x_label} vs. Avg. Summer Temp\n"
-                 f"Houston Metro Stations  (n = {st['n']},  Jun–Aug 2020–2024)")
+    ax.set_title(f"{title_prefix}: {x_label} vs. Land Surface Temp.\n"
+                 f"Houston Metro Stations  (n = {st['n']},  August 2023 — Landsat 8)")
 
     ax.xaxis.set_major_formatter(mtick.PercentFormatter(xmax=100))
     ax.legend(loc="lower right", fontsize=9)
@@ -340,7 +340,7 @@ def plot_correlation_heatmap(df: pd.DataFrame) -> None:
 
     # Friendly axis labels
     labels = {
-        "Avg_Summer_Temp": "Avg. Summer\nTemp (°C)",
+        "Avg_Summer_Temp": "Land Surface\nTemp (°C)",
         "Pct_Impervious":  "Impervious\nSurface (%)",
         "Pct_Green":       "Green\nSpace (%)",
         "Pct_Other":       "Other\nSurface (%)",
@@ -433,7 +433,7 @@ def plot_distributions(df: pd.DataFrame) -> None:
 
     for ax, col, color, label in [
         (axes[0], "Pct_Impervious", PALETTE["impervious"], "Impervious Surface Cover (%)"),
-        (axes[1], "Avg_Summer_Temp", PALETTE["neutral"],   "Avg. Summer Temperature (°C)"),
+        (axes[1], "Avg_Summer_Temp", PALETTE["neutral"],   "Land Surface Temp. (°C)"),
     ]:
         sns.histplot(df[col], kde=True, color=color, alpha=0.45, ax=ax,
                      edgecolor="white", linewidth=0.4)
@@ -478,13 +478,13 @@ def plot_joint_distribution(df: pd.DataFrame, st: dict) -> None:
 
     g.set_axis_labels(
         "Impervious Surface Cover (%)",
-        "Avg. Summer Temperature (°C)",
+        "Land Surface Temp. (°C)",
         fontsize=12, fontweight="bold",
     )
 
     r2    = st["pearson_r_imp"] ** 2
     title = (
-        f"Joint Distribution — Impervious Cover vs. Summer Temperature\n"
+        f"Joint Distribution — Impervious Cover vs. Land Surface Temperature\n"
         f"r = {st['pearson_r_imp']:+.3f}   R² = {r2:.3f}   "
         f"p = {_fmt_p(st['pearson_p_imp'])}   n = {st['n']}"
     )
@@ -521,7 +521,7 @@ def build_summary(df: pd.DataFrame, st: dict) -> str:
         "",
         "  DATASET",
         f"    Stations analysed         : {st['n']}",
-        f"    Avg. Summer Temp range    : {temp_desc['min']:.2f} – {temp_desc['max']:.2f} °C "
+        f"    LST range (Aug 2023)      : {temp_desc['min']:.2f} – {temp_desc['max']:.2f} °C "
         f"  (mean {temp_desc['mean']:.2f} °C)",
         f"    Impervious cover range    : {imp_desc['min']:.1f} – {imp_desc['max']:.1f} %"
         f"  (mean {imp_desc['mean']:.1f} %)",
@@ -547,7 +547,7 @@ def build_summary(df: pd.DataFrame, st: dict) -> str:
         f"p = {_fmt_p(st['spear_p_grn'])}   [{sig_note(st['spear_p_grn'])}]",
         "",
         "─" * 66,
-        "  SIMPLE OLS REGRESSION  —  Avg_Summer_Temp ~ Pct_Impervious",
+        "  SIMPLE OLS REGRESSION  —  LST ~ Pct_Impervious",
         "─" * 66,
         f"    Slope             : {st['ols_slope']:+.4f} °C per 1% impervious cover",
         f"    95% CI on slope   : ± {st['slope_ci']:.4f} °C",
@@ -558,7 +558,7 @@ def build_summary(df: pd.DataFrame, st: dict) -> str:
         f"    Std. Error        : {st['ols_stderr']:.4f}",
         "",
         "─" * 66,
-        "  MULTIPLE OLS REGRESSION  —  Temp ~ Pct_Impervious + Pct_Green",
+        "  MULTIPLE OLS REGRESSION  —  LST ~ Pct_Impervious + Pct_Green",
         "─" * 66,
         f"    R²                : {st['r2_multi']:.4f}  "
         f"(explains {st['r2_multi']*100:.1f}% of temperature variance)",
@@ -592,14 +592,15 @@ def build_summary(df: pd.DataFrame, st: dict) -> str:
 
     interp = f"""\
     There is a {strength} {direction_imp} correlation between impervious surface
-    cover and average summer temperature across Houston metro stations
+    cover and land surface temperature (LST) across Houston metro stations
     (Pearson r = {st['pearson_r_imp']:+.3f}, p = {_fmt_p(st['pearson_p_imp'])}).
+    LST is derived from Landsat 8 30 m thermal imagery (August 2023).
 
     The OLS regression estimates that each additional 1% of impervious
     cover is associated with a {abs(st['ols_slope']):.3f} °C {'increase' if st['ols_slope'] > 0 else 'decrease'}
-    in average summer temperature (95% CI: ±{st['slope_ci']:.3f} °C per %).
+    in LST (95% CI: ±{st['slope_ci']:.3f} °C per %).
 
-    Green space shows a {direction_grn} association with temperature
+    Green space shows a {direction_grn} association with LST
     (r = {st['pearson_r_grn']:+.3f}, p = {_fmt_p(st['pearson_p_grn'])}), consistent with
     the urban heat-island hypothesis that vegetation provides a cooling effect.
 

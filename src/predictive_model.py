@@ -93,8 +93,10 @@ def train_and_evaluate_models(df: pd.DataFrame):
     rf_model.fit(X, y)
 
     print("\n--- Linear Regression Coefficients ---")
+    geo_features = {"Latitude", "Longitude"}
     for feat, coef in zip(X.columns, lr_model.coef_):
-        print(f"  {feat:20}: {coef:+.4f} °C per 1%")
+        unit = "°C per 1°" if feat in geo_features else "°C per 1%"
+        print(f"  {feat:20}: {coef:+.4f} {unit}")
     print(f"  {'Intercept':20}: {lr_model.intercept_:.4f} °C")
 
     print("\n--- Feature Importance (Random Forest) ---")

@@ -7,7 +7,8 @@ resolution) from Google Earth Engine and saves it as a multi-band GeoTIFF.
 
 Output directory : data/images/
 Output filenames : {Station_ID}.tif
-Band order in TIF: 1=Red (S2 B4), 2=Green (S2 B3), 3=Blue (S2 B2)
+Band order in TIF: GEE sorts bands alphabetically on download →
+                   1=Blue (B2), 2=Green (B3), 3=Red (B4), 4=NIR (B8)
 Value range      : uint16, raw Sentinel-2 DN (divide by 10 000 → reflectance 0–1)
 
 Usage
@@ -50,7 +51,7 @@ IMAGES_DIR = PROJECT_ROOT / "data" / "images"
 CHIP_RADIUS_M = 1_000          # 1 km radius around each station
 SCALE_M = 10                   # Sentinel-2 native resolution (metres)
 S2_COLLECTION = "COPERNICUS/S2_SR_HARMONIZED"
-RGB_BANDS = ["B4", "B3", "B2"]  # Red, Green, Blue for S2
+BANDS = ["B2", "B3", "B4", "B8"]  # Blue, Green, Red, NIR (alphabetical = GEE download order)
 
 # Cloud-cover thresholds tried in order until one yields imagery
 CLOUD_THRESHOLDS = [10, 20, 35]
@@ -129,7 +130,7 @@ def build_s2_image(lat: float, lon: float, max_cloud_pct: int):
         .filterDate(DATE_START, DATE_END)
         .filter(ee.Filter.calendarRange(6, 8, "month"))   # summer only
         .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", max_cloud_pct))
-        .select(RGB_BANDS)
+        .select(BANDS)
     )
 
     size = collection.size().getInfo()
@@ -186,7 +187,7 @@ def download_chip(image, roi, output_path: Path) -> None:
 
     url: str = image.getDownloadURL(
         {
-            "bands": RGB_BANDS,
+            "bands": BANDS,
             "region": roi,
             "scale": SCALE_M,
             "format": "GEO_TIFF",

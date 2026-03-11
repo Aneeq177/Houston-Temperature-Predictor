@@ -1,32 +1,34 @@
 """
 segment_surfaces.py
 -------------------
-Runs semantic segmentation on each GeoTIFF in data/images/ using a
-SegFormer model fine-tuned on ADE20K (150 urban/outdoor land-cover classes).
-Classes are collapsed into two research-relevant groups:
-  - Green Space     (trees, grass, plants, fields, hills …)
-  - Impervious      (roads, buildings, sidewalks, bridges …)
+Classifies surface type for each GeoTIFF in data/images/ using spectral
+indices derived directly from Sentinel-2 bands.
 
-The remaining pixels are labelled "Other" (sky, water, parked cars, etc.).
+Primary method : NDVI  (Normalized Difference Vegetation Index)
+                 Requires a 4-band TIF with B2, B3, B4, B8 bands
+                 (produced by fetch_satellite_images.py).
 
-Primary model : nvidia/segformer-b2-finetuned-ade-512-512  (~80 MB download)
-Fallback       : Excess-Green colour index (pure NumPy, no model needed)
-                 Used automatically when `transformers` is not installed.
+                 NDVI = (NIR – Red) / (NIR + Red)
+
+                 Thresholds:
+                   NDVI  > 0.30  → Green Space   (healthy vegetation)
+                   NDVI  ≤ 0.30  and > –0.05 → Impervious  (built-up, bare soil)
+                   NDVI  ≤ –0.05            → Other       (water, deep shadow)
+
+Fallback method: ExG   (Excess Green Index, RGB-only)
+                 Used automatically for legacy 3-band TIFs.
 
 Outputs
 -------
-  data/surface_analysis.csv        Station_ID | Pct_Green | Pct_Impervious | Method
+  data/surface_analysis.csv        Station_ID | Pct_Green | Pct_Impervious | Pct_Other | Method
   data/visuals/{station_id}.png    3-panel figure: RGB | mask | overlay
 
 Usage
 -----
     python src/segment_surfaces.py
 
-    # Skip visuals (faster batch run):
+    # Skip saving overlay PNGs (faster):
     python src/segment_surfaces.py --no-visuals
-
-    # Force colour-index fallback (no GPU/internet needed):
-    python src/segment_surfaces.py --fallback
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import matplotlib
-matplotlib.use("Agg")          # non-interactive — safe for headless servers
+matplotlib.use("Agg")
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -57,57 +59,15 @@ VISUALS_DIR  = PROJECT_ROOT / "data" / "visuals"
 OUTPUT_CSV   = PROJECT_ROOT / "data" / "surface_analysis.csv"
 
 # ---------------------------------------------------------------------------
-# SegFormer model (ADE20K, 150 classes, 0-indexed)
+# NDVI classification thresholds
 # ---------------------------------------------------------------------------
-HF_MODEL_ID = "nvidia/segformer-b2-finetuned-ade-512-512"
-
-# ADE20K class index → human-readable label (abbreviated for the classes we care about)
-# Full 150-class list: https://groups.csail.mit.edu/vision/datasets/ADE20K/
-GREEN_SPACE_IDS: frozenset[int] = frozenset([
-    4,   # tree
-    9,   # grass
-    13,  # earth, ground          (bare soil — still "soft" surface)
-    17,  # plant, flora
-    29,  # field
-    66,  # flower
-    68,  # hill
-    72,  # palm tree
-    94,  # land, ground, soil
-])
-
-IMPERVIOUS_IDS: frozenset[int] = frozenset([
-    0,   # wall
-    1,   # building, edifice
-    6,   # road, route
-    11,  # sidewalk, pavement
-    20,  # car (proxy for paved surface)
-    25,  # house
-    32,  # fence
-    43,  # signboard, sign
-    48,  # skyscraper
-    51,  # grandstand
-    52,  # path
-    54,  # runway
-    61,  # bridge
-    80,  # bus
-    83,  # truck
-    84,  # tower
-    87,  # streetlight
-    91,  # dirt track
-    93,  # pole
-    101, # stage
-    102, # van
-    109, # swimming pool
-    116, # motorbike
-    122, # storage tank
-    127, # bicycle
-    136, # traffic light
-    140, # pier, wharf, dock
-])
+NDVI_GREEN_MIN      =  0.30   # NDVI above this → vegetation / green space
+NDVI_IMPERVIOUS_MIN = -0.05   # NDVI above this (and ≤ GREEN_MIN) → impervious
+                               # NDVI at or below this → Other (water, shadow)
 
 # Colour scheme for visualisations (RGB 0-255)
-_C_GREEN      = (34,  139, 34)    # forest green
-_C_IMPERVIOUS = (180, 60,  60)    # brick red
+_C_GREEN      = (34,  139,  34)   # forest green
+_C_IMPERVIOUS = (180,  60,  60)   # brick red
 _C_OTHER      = (150, 150, 150)   # mid-grey
 _ALPHA        = 160               # overlay transparency (0-255)
 
@@ -124,132 +84,93 @@ warnings.filterwarnings("ignore", category=rasterio.errors.NotGeoreferencedWarni
 
 
 # ===========================================================================
-# 1. Model loading
+# 1. Image I/O
 # ===========================================================================
 
-def load_segformer():
+def read_tif_bands(tif_path: Path) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """
-    Download (once) and return (processor, model, device) for
-    nvidia/segformer-b2-finetuned-ade-512-512.
-    Raises ImportError if `transformers` is not installed.
-    """
-    from transformers import SegformerForSemanticSegmentation, SegformerImageProcessor
-    import torch
+    Read a Sentinel-2 GeoTIFF and return (rgb_uint8, ndvi_or_None).
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    log.info("Loading SegFormer model on %s …", device.upper())
-    log.info("  Model : %s", HF_MODEL_ID)
-    log.info("  (First run downloads ~80 MB; subsequent runs use local cache.)")
+    4-band TIF (B2, B3, B4, B8 — alphabetical GEE order):
+        Band 1 = Blue  (B2)
+        Band 2 = Green (B3)
+        Band 3 = Red   (B4)
+        Band 4 = NIR   (B8)
+      → NDVI is computed and returned.
 
-    processor = SegformerImageProcessor.from_pretrained(HF_MODEL_ID)
-    model = SegformerForSemanticSegmentation.from_pretrained(HF_MODEL_ID)
-    model.to(device).eval()
+    3-band TIF (legacy, B4/B3/B2 only):
+      → ndvi is None; caller falls back to ExG.
 
-    return processor, model, device
-
-
-# ===========================================================================
-# 2. Image I/O and pre-processing
-# ===========================================================================
-
-def read_tif_as_rgb(tif_path: Path) -> np.ndarray:
-    """
-    Read a uint16 Sentinel-2 GeoTIFF (band order: 1=R, 2=G, 3=B)
-    and return a uint8 array of shape (H, W, 3).
-
-    Uses per-channel 2nd–98th percentile stretch so both dark
-    (dense vegetation) and bright (concrete, rooftops) surfaces
-    have good contrast for the segmentation model.
+    The returned rgb_uint8 is a uint8 (H, W, 3) array in R-G-B order,
+    stretched for display.
     """
     with rasterio.open(tif_path) as src:
-        # Read all three bands; shape → (3, H, W)
-        data = src.read([1, 2, 3]).astype(np.float32)
+        n_bands = src.count
+        if n_bands >= 4:
+            data = src.read([1, 2, 3, 4]).astype(np.float32)
+            blue, green, red, nir = data[0], data[1], data[2], data[3]
+            ndvi = (nir - red) / (nir + red + 1e-6)
+        else:
+            # Legacy 3-band: GEE sorted B2, B3, B4 → Blue, Green, Red
+            data = src.read([1, 2, 3]).astype(np.float32)
+            blue, green, red = data[0], data[1], data[2]
+            ndvi = None
 
-    rgb = np.transpose(data, (1, 2, 0))  # → (H, W, 3)
+    # Build RGB for display (Red, Green, Blue channel order)
+    rgb_raw = np.stack([red, green, blue], axis=2)   # (H, W, 3)
 
-    # Earth Engine's getDownloadURL natively sorts selected bands alphabetically
-    # (B2=Blue, B3=Green, B4=Red) into the GeoTIFF, so we actually read BGR.
-    # Reverse the last dimension to make it RGB.
-    rgb = rgb[:, :, ::-1]
+    valid = rgb_raw[rgb_raw > 0]
+    p2, p98 = np.percentile(valid, (2, 98)) if valid.size > 0 else (0, 1)
+    p98 = max(p98, p2 + 1)   # avoid zero division
 
-    # Apply a GLOBAL 2nd-98th percentile stretch to preserve color ratios
-    valid_pixels = rgb[rgb > 0]
-    p2, p98 = np.percentile(valid_pixels, (2, 98)) if valid_pixels.size > 0 else (0, 1)
-    p98 = max(p98, p2 + 1)  # avoid division by zero
-
-    stretched = np.clip((rgb - p2) / (p98 - p2), 0.0, 1.0)
-    out = (stretched * 255).astype(np.uint8)
-
-    return out
+    rgb_uint8 = (np.clip((rgb_raw - p2) / (p98 - p2), 0.0, 1.0) * 255).astype(np.uint8)
+    return rgb_uint8, ndvi
 
 
 # ===========================================================================
-# 3. Inference
+# 2. Segmentation
 # ===========================================================================
 
-def segment_with_segformer(
-    rgb: np.ndarray,
-    processor,
-    model,
-    device: str,
-) -> np.ndarray:
+def segment_with_ndvi(ndvi: np.ndarray) -> np.ndarray:
     """
-    Run SegFormer inference.
-    Returns class_map of shape (H, W) with ADE20K class indices (0-indexed).
+    Classify pixels using NDVI thresholds.
+
+    Returns cat_map (uint8, same shape as ndvi):
+      0 = Other      (water, shadow: NDVI ≤ –0.05)
+      1 = Green      (vegetation:   NDVI  > +0.30)
+      2 = Impervious (built-up:     –0.05 < NDVI ≤ +0.30)
     """
-    import torch
-    import torch.nn.functional as F
-
-    H, W = rgb.shape[:2]
-    pil_img = Image.fromarray(rgb)
-
-    inputs = processor(images=pil_img, return_tensors="pt").to(device)
-    with torch.no_grad():
-        logits = model(**inputs).logits          # (1, 150, H/4, W/4)
-
-    # Upsample back to original resolution
-    logits_up = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
-    class_map = logits_up.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.int16)
-    return class_map
+    cat = np.zeros(ndvi.shape, dtype=np.uint8)
+    cat[ndvi > NDVI_GREEN_MIN]                                    = 1
+    cat[(ndvi > NDVI_IMPERVIOUS_MIN) & (ndvi <= NDVI_GREEN_MIN)] = 2
+    return cat
 
 
 def segment_with_exg(rgb: np.ndarray) -> np.ndarray:
     """
-    Fallback: Excess Green Index (ExG = 2G – R – B) vegetation classifier.
-    Works on any RGB image without a neural network.
+    Fallback for 3-band TIFs: Excess Green Index (ExG = 2G – R – B).
 
-    Returns a synthetic class_map using ADE20K-compatible indices:
-      ExG > threshold → 4  (tree)
-      otherwise       → 6  (road)
+    Returns cat_map:
+      1 = Green      (ExG > 0.05)
+      2 = Impervious (everything else)
     """
-    r, g, b = rgb[:, :, 0].astype(np.float32), rgb[:, :, 1].astype(np.float32), rgb[:, :, 2].astype(np.float32)
+    r = rgb[:, :, 0].astype(np.float32)
+    g = rgb[:, :, 1].astype(np.float32)
+    b = rgb[:, :, 2].astype(np.float32)
     total = r + g + b + 1e-6
-    exg = 2.0 * (g / total) - (r / total) - (b / total)
+    exg   = (2.0 * g - r - b) / total
 
-    class_map = np.where(exg > 0.05, 4, 6).astype(np.int16)
-    return class_map
-
-
-# ===========================================================================
-# 4. Pixel classification and percentage calculation
-# ===========================================================================
-
-def make_category_map(class_map: np.ndarray) -> np.ndarray:
-    """
-    Collapse the 150-class ADE20K map into 3 research categories:
-      0 = Other / Unknown
-      1 = Green Space / Vegetation
-      2 = Impervious Surface / Built Environment
-    Returns uint8 array of the same shape.
-    """
-    cat = np.zeros(class_map.shape, dtype=np.uint8)
-    cat[np.isin(class_map, list(GREEN_SPACE_IDS))]  = 1
-    cat[np.isin(class_map, list(IMPERVIOUS_IDS))]   = 2
+    cat = np.full(exg.shape, 2, dtype=np.uint8)   # default: impervious
+    cat[exg > 0.05] = 1
     return cat
 
 
+# ===========================================================================
+# 3. Percentage calculation
+# ===========================================================================
+
 def compute_percentages(cat_map: np.ndarray) -> Tuple[float, float]:
-    """Return (pct_green, pct_impervious) as percentages (0–100, 2 d.p.)."""
+    """Return (pct_green, pct_impervious) as percentages (0–100)."""
     n = cat_map.size
     pct_green      = round(100.0 * (cat_map == 1).sum() / n, 2)
     pct_impervious = round(100.0 * (cat_map == 2).sum() / n, 2)
@@ -257,11 +178,10 @@ def compute_percentages(cat_map: np.ndarray) -> Tuple[float, float]:
 
 
 # ===========================================================================
-# 5. Visualisation
+# 4. Visualisation
 # ===========================================================================
 
 def _build_colour_mask(cat_map: np.ndarray) -> np.ndarray:
-    """Return an (H, W, 3) uint8 RGB colour mask from a category map."""
     mask = np.full((*cat_map.shape, 3), _C_OTHER, dtype=np.uint8)
     mask[cat_map == 1] = _C_GREEN
     mask[cat_map == 2] = _C_IMPERVIOUS
@@ -276,17 +196,11 @@ def save_visual(
     pct_impervious: float,
     method: str,
 ) -> None:
-    """
-    Save a 3-panel PNG to data/visuals/{station_id}.png:
-      Panel 1 — Original satellite chip
-      Panel 2 — Colour-coded surface classification
-      Panel 3 — Semi-transparent overlay on top of the original
-    """
+    """Save a 3-panel PNG to data/visuals/{station_id}.png."""
     colour_mask = _build_colour_mask(cat_map)
 
-    # Build overlay by compositing RGBA mask over RGB original
-    orig_rgba   = Image.fromarray(rgb).convert("RGBA")
-    mask_rgba   = Image.fromarray(
+    orig_rgba = Image.fromarray(rgb).convert("RGBA")
+    mask_rgba = Image.fromarray(
         np.dstack([colour_mask, np.full(cat_map.shape, _ALPHA, dtype=np.uint8)]),
         mode="RGBA",
     )
@@ -318,18 +232,10 @@ def save_visual(
         mpatches.Patch(color=[c / 255 for c in _C_OTHER],
                        label=f"Other ({pct_other:.1f}%)"),
     ]
-    fig.legend(
-        handles=legend_patches,
-        loc="lower center",
-        ncol=3,
-        fontsize=10,
-        bbox_to_anchor=(0.5, -0.04),
-    )
-    fig.suptitle(
-        f"Station {station_id}   [{method}]",
-        fontsize=13,
-        fontweight="bold",
-    )
+    fig.legend(handles=legend_patches, loc="lower center", ncol=3,
+               fontsize=10, bbox_to_anchor=(0.5, -0.04))
+    fig.suptitle(f"Station {station_id}   [{method}]",
+                 fontsize=13, fontweight="bold")
 
     plt.tight_layout()
     VISUALS_DIR.mkdir(parents=True, exist_ok=True)
@@ -339,42 +245,35 @@ def save_visual(
 
 
 # ===========================================================================
-# 6. Per-station processing
+# 5. Per-station processing
 # ===========================================================================
 
 def process_station(
     tif_path: Path,
     save_visual_flag: bool,
-    processor=None,
-    model=None,
-    device: str = "cpu",
-    use_fallback: bool = False,
 ) -> Optional[dict]:
-    """
-    Process a single station TIF.  Returns a result dict or None on failure.
-    """
+    """Process a single station TIF. Returns a result dict or None on failure."""
     station_id = tif_path.stem
 
     try:
-        rgb = read_tif_as_rgb(tif_path)
+        rgb, ndvi = read_tif_bands(tif_path)
 
-        if use_fallback:
-            class_map = segment_with_exg(rgb)
-            method = "ExG-fallback"
+        if ndvi is not None:
+            cat_map = segment_with_ndvi(ndvi)
+            method  = "NDVI"
         else:
-            class_map = segment_with_segformer(rgb, processor, model, device)
-            method = "SegFormer-ADE20K"
+            cat_map = segment_with_exg(rgb)
+            method  = "ExG-fallback"
 
-        cat_map = make_category_map(class_map)
         pct_green, pct_impervious = compute_percentages(cat_map)
 
         if save_visual_flag:
             save_visual(rgb, cat_map, station_id, pct_green, pct_impervious, method)
 
         log.info(
-            "  [OK] %s — Green: %5.1f%%  Impervious: %5.1f%%  Other: %5.1f%%",
+            "  [OK] %s — Green: %5.1f%%  Impervious: %5.1f%%  Other: %5.1f%%  [%s]",
             station_id, pct_green, pct_impervious,
-            100.0 - pct_green - pct_impervious,
+            100.0 - pct_green - pct_impervious, method,
         )
 
         return {
@@ -391,24 +290,20 @@ def process_station(
 
 
 # ===========================================================================
-# 7. Entry point
+# 6. Entry point
 # ===========================================================================
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Segment satellite images into surface types.")
     parser.add_argument("--no-visuals", action="store_true",
                         help="Skip saving overlay PNG files (faster).")
-    parser.add_argument("--fallback", action="store_true",
-                        help="Use ExG colour-index instead of the SegFormer model.")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     save_visuals = not args.no_visuals
-    use_fallback = args.fallback
 
-    # Discover TIF files
     tif_files = sorted(IMAGES_DIR.glob("*.tif"))
     if not tif_files:
         log.error(
@@ -418,45 +313,29 @@ def main() -> None:
         )
         sys.exit(1)
 
+    # Peek at the first TIF to report band count
+    with rasterio.open(tif_files[0]) as _src:
+        n_bands = _src.count
+    method_label = "NDVI (4-band)" if n_bands >= 4 else "ExG fallback (3-band)"
+
     print("=" * 62)
     print("  Houston Surface Segmentation")
-    print(f"  Images      : {len(tif_files)} stations found in {IMAGES_DIR.name}/")
-    print(f"  Model       : {'ExG colour index (fallback)' if use_fallback else HF_MODEL_ID}")
-    print(f"  Visuals     : {'data/visuals/' if save_visuals else 'disabled'}")
-    print(f"  Output CSV  : {OUTPUT_CSV.relative_to(PROJECT_ROOT)}")
+    print(f"  Images  : {len(tif_files)} stations found in {IMAGES_DIR.name}/")
+    print(f"  Method  : {method_label}")
+    print(f"  Visuals : {'data/visuals/' if save_visuals else 'disabled'}")
+    print(f"  Output  : {OUTPUT_CSV.relative_to(PROJECT_ROOT)}")
     print("=" * 62)
 
-    # Load model (unless using fallback)
-    processor = model = device = None
-    if not use_fallback:
-        try:
-            processor, model, device = load_segformer()
-        except ImportError:
-            log.warning(
-                "`transformers` not installed — switching to ExG fallback.\n"
-                "Install with:  pip install transformers"
-            )
-            use_fallback = True
-
-    # Process all stations
     results: list[dict] = []
     failed:  list[str]  = []
 
     for tif_path in tqdm(tif_files, unit="station"):
-        record = process_station(
-            tif_path,
-            save_visual_flag=save_visuals,
-            processor=processor,
-            model=model,
-            device=device or "cpu",
-            use_fallback=use_fallback,
-        )
+        record = process_station(tif_path, save_visual_flag=save_visuals)
         if record:
             results.append(record)
         else:
             failed.append(tif_path.stem)
 
-    # Save CSV
     if results:
         df = pd.DataFrame(results, columns=[
             "Station_ID", "Pct_Green", "Pct_Impervious", "Pct_Other", "Method",
@@ -465,11 +344,10 @@ def main() -> None:
         df.to_csv(OUTPUT_CSV, index=False)
 
         print("\n" + "=" * 62)
-        print(f"  Saved {len(df)} record(s) to {OUTPUT_CSV.relative_to(PROJECT_ROOT)}")
+        print(f"  Saved {len(df)} record(s) → {OUTPUT_CSV.relative_to(PROJECT_ROOT)}")
         print("\n  Summary statistics:")
         print(df[["Pct_Green", "Pct_Impervious", "Pct_Other"]].describe().to_string())
 
-    # Final report
     print("\n" + "=" * 62)
     print(f"  Succeeded : {len(results)}")
     print(f"  Failed    : {len(failed)}")
